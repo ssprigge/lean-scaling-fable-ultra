@@ -26,10 +26,13 @@ from leanscale.aggregate import (
     read_dump,
 )
 from leanscale.anomaly_analysis import collect_anomaly_results
+from leanscale.corpus import FileRecord
 from leanscale.crossover import bootstrap_crossover, find_crossover
 from leanscale.fitting import bootstrap_fits, fit_curve, percentile_ci
 from leanscale.plots import plot_ablation, plot_anomaly, plot_curves, plot_extrapolation
 from leanscale.runner import read_manifest
+from leanscale.semantics import CLASS_NAMES, CODE, class_breakdown, classify_bytes, token_classes
+from leanscale.windows import render_window_text
 
 
 def load_windows(results_dir: str, manifest: list[dict]):
@@ -43,11 +46,67 @@ def load_windows(results_dir: str, manifest: list[dict]):
     return groups
 
 
+def rebuild_window_text(row: dict, corpora_dir: str) -> str | None:
+    """Reconstruct a window's exact text from its manifest file list."""
+    recs = []
+    for disp in row["files"]:
+        repo, rel = disp.split("/", 1)
+        abs_path = os.path.join(corpora_dir, row["language"], repo, rel)
+        if not os.path.exists(abs_path):
+            return None
+        recs.append(
+            FileRecord(language=row["language"], repo=repo, rel_path=rel,
+                       abs_path=abs_path, n_bytes=os.path.getsize(abs_path))
+        )
+    text = render_window_text(recs, row["language"])
+    if len(text.encode("utf-8")) != row.get("text_bytes"):
+        print(f"warning: rebuilt text size mismatch for {row['window_id']}")
+        return None
+    return text
+
+
+def semantics_pass(results_dir: str, manifest: list[dict], corpora_dir: str, edges):
+    """Code-only curves + per-class bit/byte breakdowns per (lang, ordering)."""
+    from leanscale.aggregate import WindowLosses
+
+    code_windows: dict[tuple[str, str], list] = defaultdict(list)
+    breakdown_rows = []
+    for row in manifest:
+        path = os.path.join(results_dir, "dumps", row["window_id"] + ".tsv.gz")
+        if not os.path.exists(path):
+            continue
+        text = rebuild_window_text(row, corpora_dir)
+        if text is None:
+            continue
+        w = read_dump(path, row["window_id"], row["language"], row["ordering"])
+        bcls = classify_bytes(text, row["language"])
+        if int(w.token_bytes.sum()) > len(bcls):
+            print(f"warning: token bytes exceed text for {row['window_id']}")
+            continue
+        tcls = token_classes(bcls, w.token_bytes)
+        bd = class_breakdown(w.bits, w.token_bytes, tcls)
+        for name, d in bd.items():
+            breakdown_rows.append({"language": row["language"], "ordering": row["ordering"],
+                                   "window_id": row["window_id"], "class": name, **d})
+        keep = tcls == CODE
+        # Keep byte-position attribution from the FULL window (context includes
+        # comments read); only restrict which tokens' losses are measured.
+        code_windows[(row["language"], row["ordering"])].append(
+            WindowLosses(
+                window_id=w.window_id, language=w.language, ordering=w.ordering,
+                token_ids=w.token_ids[keep], token_bytes=w.token_bytes[keep],
+                bits=w.bits[keep], ctx_bytes=w.ctx_bytes[keep], ctx_tokens=w.ctx_tokens[keep],
+            )
+        )
+    return code_windows, breakdown_rows
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--results", default="results/main")
     ap.add_argument("--out", default="results/analysis")
     ap.add_argument("--figures", default="results/figures")
+    ap.add_argument("--corpora", default="", help="corpora dir; enables code-only semantics pass")
     ap.add_argument("--n-boot", type=int, default=400)
     ap.add_argument("--bin-lo", type=float, default=24.0)
     ap.add_argument("--bin-hi", type=float, default=131072.0)
@@ -180,6 +239,33 @@ def main() -> None:
         if pairs:
             plot_ablation(pairs, os.path.join(args.figures, "ablation.png"))
             pd.DataFrame(strows).to_csv(os.path.join(args.out, "ablation.csv"), index=False)
+
+    # ---- semantics: code-only curves + class breakdown ----
+    if args.corpora:
+        code_groups, breakdown_rows = semantics_pass(args.results, manifest, args.corpora, edges)
+        if breakdown_rows:
+            pd.DataFrame(breakdown_rows).to_csv(os.path.join(args.out, "class_breakdown.csv"), index=False)
+        code_fit_rows, code_curve_rows = [], []
+        code_curves_by_ordering: dict[str, dict] = defaultdict(dict)
+        code_fits_by_ordering: dict[str, dict] = defaultdict(dict)
+        for (lang, ordering), windows in sorted(code_groups.items()):
+            curve = curve_from_windows(windows, edges)
+            code_curves_by_ordering[ordering][lang] = (curve.centers, curve.bpb)
+            for c, y, nb in zip(curve.centers, curve.bpb, curve.n_bytes):
+                code_curve_rows.append({"language": lang, "ordering": ordering,
+                                        "ctx_bytes": float(c), "bpb": float(y), "n_bytes": float(nb)})
+            fit = fit_curve(curve.centers, curve.bpb, curve.n_bytes, model="floor")
+            code_fits_by_ordering[ordering][lang] = fit
+            if fit is not None:
+                code_fit_rows.append({"language": lang, "ordering": ordering, "model": "floor",
+                                      **fit.params, "aicc": fit.aicc, "n_points": fit.n_points})
+        if code_curve_rows:
+            pd.DataFrame(code_curve_rows).to_csv(os.path.join(args.out, "curves_code_only.csv"), index=False)
+            pd.DataFrame(code_fit_rows).to_csv(os.path.join(args.out, "fits_code_only.csv"), index=False)
+            for ordering, curves in code_curves_by_ordering.items():
+                plot_curves(curves, code_fits_by_ordering[ordering],
+                            f"Bits/byte vs. context, code tokens only — {ordering} order",
+                            os.path.join(args.figures, f"curves_code_{ordering}.png"))
 
     # ---- headline json ----
     summary = {
