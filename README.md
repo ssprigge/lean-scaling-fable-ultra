@@ -66,20 +66,11 @@ REPORT.md           results write-up
 ## Reproducing
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install -e . && .venv/bin/pip install pytest
-.venv/bin/python -m pytest tests/
-
-# corpora (pinned SHAs recorded in results/corpora_manifest.tsv)
-scripts/fetch_corpora.sh /scratch/corpora
-
-# model: Qwen2-0.5B (base) safetensors -> GGUF Q8_0 with llama.cpp's converter
-# (weights were fetched from the public SageMaker JumpStart S3 mirror since
-# huggingface.co was unreachable in the build environment)
-
-# build the dumper against a llama.cpp build tree
-g++ -O2 -std=c++17 tools/ppl_dump.cpp -I$LLAMA/include -I$LLAMA/ggml/include \
-    -L$LLAMA/build/bin -lllama -lggml -lggml-base -Wl,-rpath,$LLAMA/build/bin \
-    -o ppl-dump
+# one-command environment rebuild: venv, corpora (pinned SHAs -> results/
+# corpora_manifest.tsv), llama.cpp @ b6100, Qwen2-0.5B base weights (public
+# SageMaker JumpStart S3 mirror; huggingface.co is unreachable in the build
+# environment), GGUF Q8_0 conversion, ppl-dump build, unit tests:
+scripts/setup_env.sh /home/user/scratch
 
 .venv/bin/python scripts/run_sweep.py    --corpora ... --results results/main ...
 .venv/bin/python scripts/run_anomaly.py  --corpora ... --results results/main ...

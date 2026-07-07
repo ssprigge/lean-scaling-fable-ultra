@@ -59,9 +59,13 @@ static std::vector<llama_token> tokenize(const llama_vocab *vocab, const std::st
     return toks;
 }
 
+// UTF-8 byte length of a token as it appeared in the *input* text. Control
+// tokens (BOS etc.) must contribute 0 bytes — with special=false llama.cpp
+// declines to render them — so byte accounting never counts bytes that were
+// not in the source file, regardless of the model's chat/BOS conventions.
 static int piece_bytes(const llama_vocab *vocab, llama_token tok) {
     char buf[256];
-    int n = llama_token_to_piece(vocab, tok, buf, sizeof(buf), 0, true);
+    int n = llama_token_to_piece(vocab, tok, buf, sizeof(buf), 0, false);
     return n < 0 ? 0 : n;
 }
 
@@ -202,8 +206,16 @@ static void run_variants(Ctx &C, const std::string &jobfile, const std::string &
                     lp[i + 1] = logprob_of(logits, C.n_vocab, toks[i + 1]);
                 });
                 if (rc != 0) exit(2);
-                // Roll the KV cache back to the bare prefix.
-                llama_memory_seq_rm(mem, 0, prefix_tokens, -1);
+                // Roll the KV cache back to the bare prefix. Partial-tail
+                // removal can fail (recurrent/hybrid memories return false);
+                // if that were ignored, this span's tokens would silently
+                // condition every later SPAN/PREFIX at this site.
+                if (!llama_memory_seq_rm(mem, 0, prefix_tokens, -1)) {
+                    fprintf(stderr, "error: KV rollback to pos %d failed: this model's memory "
+                                    "cannot remove a partial sequence tail (recurrent/hybrid?); "
+                                    "variants mode requires a standard KV-cache model\n", prefix_tokens);
+                    exit(2);
+                }
             }
             for (int i = 0; i < ns; i++) {
                 fprintf(out, "%s\t%d\t%d\t%d\t%.6f\n", id.c_str(), i, toks[i], piece_bytes(C.vocab, toks[i]), lp[i]);
