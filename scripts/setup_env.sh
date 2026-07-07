@@ -38,8 +38,12 @@ if [ ! -f "$SCRATCH/llama.cpp/build/bin/libllama.so" ]; then
     git clone --quiet --depth 1 --branch "$LLAMA_TAG" \
       https://github.com/ggml-org/llama.cpp.git "$SCRATCH/llama.cpp"
   fi
+  # Portable x86-64-v3 baseline, NOT -march=native: this environment's
+  # containers can migrate between hosts with different ISA extensions
+  # mid-session (observed: a GGML_NATIVE build SIGILLed after a migration).
   cmake -S "$SCRATCH/llama.cpp" -B "$SCRATCH/llama.cpp/build" \
-        -DGGML_NATIVE=ON -DLLAMA_CURL=OFF -DCMAKE_BUILD_TYPE=Release
+        -DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON \
+        -DLLAMA_CURL=OFF -DCMAKE_BUILD_TYPE=Release
   cmake --build "$SCRATCH/llama.cpp/build" --config Release -j 3 -t llama
 fi
 
