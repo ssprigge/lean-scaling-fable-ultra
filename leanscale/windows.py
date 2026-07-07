@@ -80,9 +80,16 @@ def build_windows(
     n_windows: int,
     byte_budget: int,
     seed: int = 0,
+    allow_fewer: bool = False,
 ) -> list[Window]:
     """Chop the ordered file list into `n_windows` disjoint windows of at
-    least `byte_budget` bytes each (headers included)."""
+    least `byte_budget` bytes each (headers included).
+
+    A corpus that cannot fill the request raises by default; with
+    ``allow_fewer=True`` it returns the windows that do exist (callers must
+    report the shortfall — never cap silently). Windows are built
+    front-to-back from the seeded ordering, so the first k windows are
+    identical regardless of how many were requested."""
     ordered = order_files(records, ordering, seed)
     windows: list[Window] = []
     i = 0
@@ -105,7 +112,7 @@ def build_windows(
                 text=render_window_text(chosen, language),
             )
         )
-    if len(windows) < n_windows:
+    if len(windows) < n_windows and not (allow_fewer and windows):
         raise ValueError(
             f"{language}/{ordering}: corpus supports only {len(windows)} of "
             f"{n_windows} requested disjoint windows of {byte_budget} bytes"

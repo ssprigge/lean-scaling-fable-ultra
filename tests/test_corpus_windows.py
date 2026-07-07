@@ -73,3 +73,18 @@ def test_too_many_windows_raises(fake_corpus):
     recs = scan_language(fake_corpus, "python")
     with pytest.raises(ValueError):
         build_windows(recs, "python", "shuffled", 100, 5000, seed=0)
+
+
+def test_allow_fewer_degrades_with_identical_prefix(fake_corpus):
+    recs = scan_language(fake_corpus, "python")
+    few = build_windows(recs, "python", "shuffled", 100, 5000, seed=0, allow_fewer=True)
+    assert 0 < len(few) < 100
+    # The first k windows must be identical to a smaller request, so resumed
+    # runs and shortfalls never change window composition.
+    exact = build_windows(recs, "python", "shuffled", len(few), 5000, seed=0)
+    assert [[f.abs_path for f in w.files] for w in few] == [
+        [f.abs_path for f in w.files] for w in exact
+    ]
+    # An empty corpus still raises even with allow_fewer.
+    with pytest.raises(ValueError):
+        build_windows(recs, "python", "shuffled", 3, 10_000_000, seed=0, allow_fewer=True)

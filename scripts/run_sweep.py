@@ -37,6 +37,13 @@ def main() -> None:
     ap.add_argument("--threads", type=int, default=4)
     args = ap.parse_args()
 
+    # Pidfile for the babysitter (chain_after_sweep.sh): pgrep -f is unreliable
+    # here because transient monitoring shells embed this script's name in
+    # their command lines.
+    os.makedirs(args.scratch, exist_ok=True)
+    with open(os.path.join(args.scratch, "run_sweep.pid"), "w") as pf:
+        pf.write(str(os.getpid()))
+
     cfg = DumperConfig(
         binary=args.binary, model=args.model, n_ctx=args.ctx, n_threads=args.threads
     )
@@ -50,7 +57,16 @@ def main() -> None:
         stats = corpus_stats(records)
         print(f"[{lang}] {stats['n_files']} files, {stats['total_bytes']/1e6:.1f} MB", flush=True)
         for ordering, n in (("sorted", args.sorted_windows), ("shuffled", args.shuffled_windows)):
-            windows = build_windows(records, lang, ordering, n, args.budget, seed=args.seed)
+            windows = build_windows(
+                records, lang, ordering, n, args.budget, seed=args.seed, allow_fewer=True
+            )
+            if len(windows) < n:
+                print(
+                    f"[{lang}] WARNING: corpus supports only {len(windows)}/{n} "
+                    f"disjoint {ordering} windows of {args.budget} bytes; "
+                    f"measuring what exists",
+                    flush=True,
+                )
             jobs.extend(windows)
 
     # Interleave languages so partial results cover all languages evenly.

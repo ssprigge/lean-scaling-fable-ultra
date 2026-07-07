@@ -47,7 +47,15 @@ def main() -> None:
 
     for lang in args.languages.split(","):
         records = scan_language(args.corpora, lang)
-        windows = build_windows(records, lang, "sorted", args.windows, args.budget, seed=args.seed)
+        windows = build_windows(
+            records, lang, "sorted", args.windows, args.budget, seed=args.seed, allow_fewer=True
+        )
+        if len(windows) < args.windows:
+            print(
+                f"[{lang}] WARNING: corpus supports only {len(windows)}/{args.windows} "
+                f"sorted windows; injecting into what exists",
+                flush=True,
+            )
         for w in windows:
             job_id = f"anomaly-{w.window_id}"
             if job_id in done:

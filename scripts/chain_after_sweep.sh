@@ -10,21 +10,42 @@ PY="$REPO/.venv/bin/python"
 BIN="$SCRATCH/ppl-dump"
 MODEL="$SCRATCH/models/qwen2-0.5b-q8_0.gguf"
 
+echo $$ > "$SCRATCH/chain.pid"
 cd "$REPO"
 
+# Liveness via the pidfile run_sweep.py writes at startup. (pgrep -f is
+# unreliable: transient monitoring shells embed "run_sweep.py" in their
+# command lines and match.)
+sweep_alive() {
+  local pf="$SCRATCH/work/run_sweep.pid" pid
+  [ -f "$pf" ] || return 1
+  pid=$(cat "$pf" 2>/dev/null) || return 1
+  [ -n "$pid" ] && [ -d "/proc/$pid" ] && \
+    grep -qa "run_sweep" "/proc/$pid/cmdline" 2>/dev/null
+}
+
 echo "[chain] waiting for main sweep to complete..."
+restarts=0
 while ! grep -q "SWEEP_COMPLETE" "$SCRATCH/sweep.log" 2>/dev/null; do
-  if ! pgrep -f "run_sweep.py" > /dev/null 2>&1; then
-    echo "[chain] sweep process died without completing; restarting it"
+  # Sleep first: a just-launched sweep gets a full minute to write its
+  # pidfile before the first liveness check.
+  sleep 60
+  grep -q "SWEEP_COMPLETE" "$SCRATCH/sweep.log" 2>/dev/null && break
+  if ! sweep_alive; then
+    if [ "$restarts" -ge 5 ]; then
+      echo "[chain] sweep died $restarts times; giving up"
+      echo "SWEEP_FAILED"
+      exit 1
+    fi
+    restarts=$((restarts + 1))
+    echo "[chain] sweep process died without completing; restarting it ($restarts/5)"
     setsid nohup "$PY" scripts/run_sweep.py \
       --corpora "$SCRATCH/corpora" --results results/main --scratch "$SCRATCH/work" \
       --binary "$BIN" --model "$MODEL" \
       --languages lean,python,haskell,rust,c,javascript \
       --sorted-windows 8 --shuffled-windows 4 --ctx 16384 --budget 90000 --threads 4 \
       >> "$SCRATCH/sweep.log" 2>&1
-    sleep 60
   fi
-  sleep 60
 done
 echo "[chain] sweep complete; starting anomaly sweep"
 
