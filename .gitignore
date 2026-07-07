@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+*.egg-info/
+# Raw scratch (models, corpora, work files) lives outside the repo; results/
+# (dumps, analysis, figures) IS committed for reproducibility.
